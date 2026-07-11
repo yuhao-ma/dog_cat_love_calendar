@@ -23,9 +23,9 @@ let supabase;
 let session = null;
 let context = null;
 let currentPage = getPageFromUrl();
-let selectedDate = localStorage.getItem("dogCat:selectedDate") || todayISO();
-let scheduleRange = "day";
-let wishFilter = "全部";
+let selectedDate = getDateFromUrl() || localStorage.getItem("dogCat:selectedDate") || todayISO();
+let scheduleRange = sessionStorage.getItem("dogCat:scheduleRange") || "day";
+let wishFilter = sessionStorage.getItem("dogCat:wishFilter") || "全部";
 let realtimeChannel = null;
 let refreshTimer = null;
 let bootToken = 0;
@@ -34,6 +34,11 @@ let shellAbortController = null;
 function getPageFromUrl() {
   const page = new URLSearchParams(location.search).get("page");
   return VALID_PAGES.includes(page) ? page : "home";
+}
+
+function getDateFromUrl() {
+  const date = new URLSearchParams(location.search).get("date");
+  return /^\d{4}-\d{2}-\d{2}$/.test(date || "") ? date : null;
 }
 
 function todayISO() {
@@ -145,9 +150,18 @@ async function initialize() {
   if (error) console.warn(error);
   session = data.session;
 
-  supabase.auth.onAuthStateChange((_event, nextSession) => {
+  supabase.auth.onAuthStateChange((event, nextSession) => {
+    const previousUserId = session?.user?.id || null;
+    const nextUserId = nextSession?.user?.id || null;
     session = nextSession;
-    window.setTimeout(() => boot(), 0);
+
+    // Supabase may emit SIGNED_IN again when a browser tab regains focus.
+    // Only rebuild the whole app when the actual signed-in user changes,
+    // when the user signs out, or when account data is explicitly updated.
+    const userChanged = previousUserId !== nextUserId;
+    if (event === "SIGNED_OUT" || userChanged || event === "USER_UPDATED") {
+      window.setTimeout(() => boot(), 0);
+    }
   });
 
   await boot();
@@ -464,6 +478,7 @@ function navigate(page, replace = false) {
   currentPage = page;
   const url = new URL(location.href);
   url.searchParams.set("page", page);
+  url.searchParams.set("date", selectedDate);
   history[replace ? "replaceState" : "pushState"]({}, "", url);
   updateChrome();
   renderCurrentPage();
@@ -473,6 +488,9 @@ function selectDate(value) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return;
   selectedDate = value;
   localStorage.setItem("dogCat:selectedDate", value);
+  const url = new URL(location.href);
+  url.searchParams.set("date", value);
+  history.replaceState({}, "", url);
   updateChrome();
   renderCurrentPage();
 }
@@ -565,6 +583,7 @@ function taskListHTML(tasks, compact = false) {
       <div class="task-controls">
         <button class="person-check ${mineDone ? "done" : ""}" data-toggle-task="${task.id}">${PERSON[ownRole].icon} ${mineDone ? "我已完成" : "我来打勾"}</button>
         <span class="person-check ${otherDone ? "done" : ""}" style="cursor:default">${PERSON[otherRole].icon} ${otherDone ? "对方完成" : "等待对方"}</span>
+        <button class="button secondary small" data-edit-task="${task.id}">编辑</button>
         <button class="delete-button" title="删除事项" data-delete-task="${task.id}">×</button>
       </div>
     </article>`;
@@ -655,7 +674,7 @@ async function renderWishes() {
 
 function wishCardHTML(wish) {
   const ownerIcon = wish.owner_role === "both" ? "🐶🐱" : PERSON[wish.owner_role].icon;
-  return `<article class="card wish-card"><div class="wish-top"><span class="status-label">${escapeHTML(wish.category)}</span><span>${ownerIcon}</span></div><h3>${escapeHTML(wish.title)}</h3><p>${escapeHTML(wish.note || "以后一起完成。")}</p><div class="wish-meta">${wish.planned_date ? `计划日期：${shortDate(wish.planned_date)}` : "暂时没有设定日期"}</div><div class="wish-bottom"><div class="wish-status-line"><span class="status-label">${WISH_STAGES[wish.status]}</span><span>${wish.status + 1}/4</span></div><div class="stage-track">${[0,1,2,3].map((index) => `<span class="${index <= wish.status ? "active" : ""}"></span>`).join("")}</div><div class="wish-actions"><button class="button primary small" data-advance-wish="${wish.id}" ${wish.status >= 3 ? "disabled" : ""}>${wish.status >= 3 ? "已经完成" : "推进一步"}</button><button class="button danger small" data-delete-wish="${wish.id}">删除</button></div></div></article>`;
+  return `<article class="card wish-card"><div class="wish-top"><span class="status-label">${escapeHTML(wish.category)}</span><span>${ownerIcon}</span></div><h3>${escapeHTML(wish.title)}</h3><p>${escapeHTML(wish.note || "以后一起完成。")}</p><div class="wish-meta">${wish.planned_date ? `计划日期：${shortDate(wish.planned_date)}` : "暂时没有设定日期"}</div><div class="wish-bottom"><div class="wish-status-line"><span class="status-label">${WISH_STAGES[wish.status]}</span><span>${wish.status + 1}/4</span></div><div class="stage-track">${[0,1,2,3].map((index) => `<span class="${index <= wish.status ? "active" : ""}"></span>`).join("")}</div><div class="wish-actions"><button class="button primary small" data-advance-wish="${wish.id}" ${wish.status >= 3 ? "disabled" : ""}>${wish.status >= 3 ? "已经完成" : "推进一步"}</button><button class="button secondary small" data-edit-wish="${wish.id}">编辑</button><button class="button danger small" data-delete-wish="${wish.id}">删除</button></div></div></article>`;
 }
 
 async function renderMemories() {
@@ -665,7 +684,7 @@ async function renderMemories() {
   const taskCount = memories.filter((item) => item.source_type === "task").length;
   const wishCount = memories.filter((item) => item.source_type === "wish").length;
   const uniqueDays = new Set(memories.map((item) => item.memory_date)).size;
-  document.querySelector("#pageRoot").innerHTML = `<div class="memory-stats"><div class="memory-stat"><span class="memory-stat-icon">♥</span><div><span>共同回忆</span><strong>${memories.length}</strong></div></div><div class="memory-stat"><span class="memory-stat-icon">✓</span><div><span>完成事项</span><strong>${taskCount}</strong></div></div><div class="memory-stat"><span class="memory-stat-icon">☆</span><div><span>实现愿望</span><strong>${wishCount}</strong></div></div><div class="memory-stat"><span class="memory-stat-icon">☀</span><div><span>被记录的日子</span><strong>${uniqueDays}</strong></div></div></div><div class="timeline">${memories.length ? memories.map((memory) => `<article class="timeline-item"><time>${fullDate(memory.memory_date)}</time><h3>${escapeHTML(memory.icon)} ${escapeHTML(memory.title)}</h3><p>${escapeHTML(memory.note || "这是属于我们的共同回忆。")}</p>${memory.source_type === "manual" ? `<button class="delete-button" style="position:absolute;right:18px;top:18px" data-delete-memory="${memory.id}" title="删除回忆">×</button>` : ""}</article>`).join("") : `<div class="empty-state">共同完成的事情，会慢慢出现在这里。</div>`}</div>`;
+  document.querySelector("#pageRoot").innerHTML = `<div class="memory-stats"><div class="memory-stat"><span class="memory-stat-icon">♥</span><div><span>共同回忆</span><strong>${memories.length}</strong></div></div><div class="memory-stat"><span class="memory-stat-icon">✓</span><div><span>完成事项</span><strong>${taskCount}</strong></div></div><div class="memory-stat"><span class="memory-stat-icon">☆</span><div><span>实现愿望</span><strong>${wishCount}</strong></div></div><div class="memory-stat"><span class="memory-stat-icon">☀</span><div><span>被记录的日子</span><strong>${uniqueDays}</strong></div></div></div><div class="timeline">${memories.length ? memories.map((memory) => `<article class="timeline-item"><time>${fullDate(memory.memory_date)}</time><h3>${escapeHTML(memory.icon)} ${escapeHTML(memory.title)}</h3><p>${escapeHTML(memory.note || "这是属于我们的共同回忆。")}</p>${memory.source_type === "manual" ? `<div style="position:absolute;right:18px;top:18px;display:flex;gap:8px"><button class="button secondary small" data-edit-memory="${memory.id}">编辑</button><button class="delete-button" data-delete-memory="${memory.id}" title="删除回忆">×</button></div>` : ""}</article>`).join("") : `<div class="empty-state">共同完成的事情，会慢慢出现在这里。</div>`}</div>`;
 }
 
 function openModal(content) {
@@ -682,8 +701,15 @@ function modalHeader(eyebrow, title) {
   return `<div class="modal-header"><div><p class="eyebrow">${eyebrow}</p><h2>${title}</h2></div><button class="close-modal" type="button" data-close-modal>×</button></div>`;
 }
 
-function openTaskModal() {
-  openModal(`<section class="modal">${modalHeader("NEW PLAN", "添加共同事项")}<form id="taskForm" class="form-grid"><div class="preset-row"><button type="button" class="preset-chip" data-task-preset="晚上视频通话">视频通话</button><button type="button" class="preset-chip" data-task-preset="一起看一部电影">一起看电影</button><button type="button" class="preset-chip" data-task-preset="一起学习一小时">一起学习</button><button type="button" class="preset-chip" data-task-preset="睡前认真说晚安">睡前晚安</button></div><label>事情名称<input name="title" required maxlength="100" placeholder="例如：晚上一起视频通话"></label><div class="form-row"><label>日期<input name="date" type="date" required value="${selectedDate}"></label><label>时间<input name="time" type="time"></label></div><label>备注<textarea name="note" maxlength="300" placeholder="写下一点小约定……"></textarea></label><div class="modal-actions"><button type="button" class="button secondary" data-close-modal>取消</button><button class="button primary" type="submit">保存到共享日程</button></div></form></section>`);
+async function openTaskModal(taskId = null) {
+  let existing = null;
+  if (taskId) {
+    const { data, error } = await supabase.from("tasks").select("*").eq("couple_id", context.couple.id).eq("id", taskId).single();
+    if (error) { showToast(getErrorMessage(error), true); return; }
+    existing = data;
+  }
+  const title = existing ? "修改共同事项" : "添加共同事项";
+  openModal(`<section class="modal">${modalHeader(existing ? "EDIT PLAN" : "NEW PLAN", title)}<form id="taskForm" class="form-grid"><input type="hidden" name="recordId" value="${existing?.id || ""}"><div class="preset-row"><button type="button" class="preset-chip" data-task-preset="晚上视频通话">视频通话</button><button type="button" class="preset-chip" data-task-preset="一起看一部电影">一起看电影</button><button type="button" class="preset-chip" data-task-preset="一起学习一小时">一起学习</button><button type="button" class="preset-chip" data-task-preset="睡前认真说晚安">睡前晚安</button></div><label>事情名称<input name="title" required maxlength="100" placeholder="例如：晚上一起视频通话" value="${escapeHTML(existing?.title || "")}"></label><div class="form-row"><label>日期<input name="date" type="date" required value="${existing?.task_date || selectedDate}"></label><label>时间<input name="time" type="time" value="${timeText(existing?.task_time)}"></label></div><label>备注<textarea name="note" maxlength="300" placeholder="写下一点小约定……">${escapeHTML(existing?.note || "")}</textarea></label><div class="modal-actions"><button type="button" class="button secondary" data-close-modal>取消</button><button class="button primary" type="submit">${existing ? "保存修改" : "保存到共享日程"}</button></div></form></section>`);
 }
 
 async function openEntryModal() {
@@ -699,12 +725,27 @@ async function openNoteModal() {
   openModal(`<section class="modal">${modalHeader("A NOTE FOR YOU", `留下${shortDate(selectedDate)}的一句话`)}<form id="noteForm" class="form-grid"><label>共享留言<textarea name="content" maxlength="500" required placeholder="例如：今天也要好好吃饭，晚上见。">${escapeHTML(data?.content || "")}</textarea></label><div class="modal-actions"><button type="button" class="button secondary" data-close-modal>取消</button><button class="button primary" type="submit">保存共享留言</button></div></form></section>`);
 }
 
-function openWishModal() {
-  openModal(`<section class="modal">${modalHeader("NEW WISH", "添加一个共同愿望")}<form id="wishForm" class="form-grid"><label>愿望标题<input name="title" required maxlength="100" placeholder="例如：一起去海边看日落"></label><div class="form-row"><label>类别<select name="category"><option>旅行</option><option>美食</option><option>电影</option><option>体验</option><option>生活</option><option>长期目标</option></select></label><label>谁想到的<select name="ownerRole"><option value="both">我们</option><option value="dog">狗狗</option><option value="cat">咪咪</option></select></label></div><label>计划日期（可选）<input name="plannedDate" type="date"></label><label>小备注<textarea name="note" maxlength="300" placeholder="为什么想一起完成它？"></textarea></label><div class="modal-actions"><button type="button" class="button secondary" data-close-modal>取消</button><button class="button primary" type="submit">放进愿望清单</button></div></form></section>`);
+async function openWishModal(wishId = null) {
+  let existing = null;
+  if (wishId) {
+    const { data, error } = await supabase.from("wishes").select("*").eq("couple_id", context.couple.id).eq("id", wishId).single();
+    if (error) { showToast(getErrorMessage(error), true); return; }
+    existing = data;
+  }
+  const categories = ["旅行", "美食", "电影", "体验", "生活", "长期目标"];
+  const owners = [["both", "我们"], ["dog", "狗狗"], ["cat", "咪咪"]];
+  openModal(`<section class="modal">${modalHeader(existing ? "EDIT WISH" : "NEW WISH", existing ? "修改共同愿望" : "添加一个共同愿望")}<form id="wishForm" class="form-grid"><input type="hidden" name="recordId" value="${existing?.id || ""}"><label>愿望标题<input name="title" required maxlength="100" placeholder="例如：一起去海边看日落" value="${escapeHTML(existing?.title || "")}"></label><div class="form-row"><label>类别<select name="category">${categories.map((item) => `<option ${existing?.category === item ? "selected" : ""}>${item}</option>`).join("")}</select></label><label>谁想到的<select name="ownerRole">${owners.map(([value, label]) => `<option value="${value}" ${existing?.owner_role === value || (!existing && value === "both") ? "selected" : ""}>${label}</option>`).join("")}</select></label></div><label>计划日期（可选）<input name="plannedDate" type="date" value="${existing?.planned_date || ""}"></label><label>小备注<textarea name="note" maxlength="300" placeholder="为什么想一起完成它？">${escapeHTML(existing?.note || "")}</textarea></label><div class="modal-actions"><button type="button" class="button secondary" data-close-modal>取消</button><button class="button primary" type="submit">${existing ? "保存修改" : "放进愿望清单"}</button></div></form></section>`);
 }
 
-function openMemoryModal() {
-  openModal(`<section class="modal">${modalHeader("NEW MEMORY", "保存一条共同回忆")}<form id="memoryForm" class="form-grid"><div class="form-row"><label>日期<input name="date" type="date" required value="${selectedDate}"></label><label>小图标<select name="icon"><option>♥</option><option>🏡</option><option>🎬</option><option>✈️</option><option>🎂</option><option>🌙</option><option>🌊</option></select></label></div><label>回忆标题<input name="title" required maxlength="120" placeholder="例如：第一次一起做晚饭"></label><label>想记住的细节<textarea name="note" maxlength="500"></textarea></label><div class="modal-actions"><button type="button" class="button secondary" data-close-modal>取消</button><button class="button primary" type="submit">保存到回忆</button></div></form></section>`);
+async function openMemoryModal(memoryId = null) {
+  let existing = null;
+  if (memoryId) {
+    const { data, error } = await supabase.from("memories").select("*").eq("couple_id", context.couple.id).eq("id", memoryId).eq("source_type", "manual").single();
+    if (error) { showToast(getErrorMessage(error), true); return; }
+    existing = data;
+  }
+  const icons = ["♥", "🏡", "🎬", "✈️", "🎂", "🌙", "🌊"];
+  openModal(`<section class="modal">${modalHeader(existing ? "EDIT MEMORY" : "NEW MEMORY", existing ? "修改共同回忆" : "保存一条共同回忆")}<form id="memoryForm" class="form-grid"><input type="hidden" name="recordId" value="${existing?.id || ""}"><div class="form-row"><label>日期<input name="date" type="date" required value="${existing?.memory_date || selectedDate}"></label><label>小图标<select name="icon">${icons.map((icon) => `<option ${existing?.icon === icon ? "selected" : ""}>${icon}</option>`).join("")}</select></label></div><label>回忆标题<input name="title" required maxlength="120" placeholder="例如：第一次一起做晚饭" value="${escapeHTML(existing?.title || "")}"></label><label>想记住的细节<textarea name="note" maxlength="500">${escapeHTML(existing?.note || "")}</textarea></label><div class="modal-actions"><button type="button" class="button secondary" data-close-modal>取消</button><button class="button primary" type="submit">${existing ? "保存修改" : "保存到回忆"}</button></div></form></section>`);
 }
 
 function handlePageAction() {
@@ -718,18 +759,24 @@ async function handleDelegatedClick(event) {
   const dateButton = event.target.closest("[data-select-date]");
   if (dateButton) { selectDate(dateButton.dataset.selectDate); return; }
   if (event.target.closest("[data-add-task]")) { openTaskModal(); return; }
+  const editTask = event.target.closest("[data-edit-task]");
+  if (editTask) { await openTaskModal(editTask.dataset.editTask); return; }
   if (event.target.closest("[data-edit-entry]")) { openEntryModal(); return; }
   if (event.target.closest("[data-edit-note]")) { openNoteModal(); return; }
   if (event.target.closest("[data-add-wish]")) { openWishModal(); return; }
+  const editWish = event.target.closest("[data-edit-wish]");
+  if (editWish) { await openWishModal(editWish.dataset.editWish); return; }
+  const editMemory = event.target.closest("[data-edit-memory]");
+  if (editMemory) { await openMemoryModal(editMemory.dataset.editMemory); return; }
   if (event.target.closest("[data-close-modal]")) { closeModal(); return; }
   if (event.target.matches("[data-close-backdrop]")) { closeModal(); return; }
 
   const preset = event.target.closest("[data-task-preset]");
   if (preset) { const input = document.querySelector('#taskForm input[name="title"]'); if (input) { input.value = preset.dataset.taskPreset; input.focus(); } return; }
   const range = event.target.closest("[data-schedule-range]");
-  if (range) { scheduleRange = range.dataset.scheduleRange; renderCurrentPage(); return; }
+  if (range) { scheduleRange = range.dataset.scheduleRange; sessionStorage.setItem("dogCat:scheduleRange", scheduleRange); renderCurrentPage(); return; }
   const filter = event.target.closest("[data-wish-filter]");
-  if (filter) { wishFilter = filter.dataset.wishFilter; renderCurrentPage(); return; }
+  if (filter) { wishFilter = filter.dataset.wishFilter; sessionStorage.setItem("dogCat:wishFilter", wishFilter); renderCurrentPage(); return; }
   const toggle = event.target.closest("[data-toggle-task]");
   if (toggle) { await toggleTask(toggle.dataset.toggleTask); return; }
   const deleteTask = event.target.closest("[data-delete-task]");
@@ -767,13 +814,21 @@ async function handleDelegatedSubmit(event) {
 }
 
 async function saveTask(data) {
+  const recordId = String(data.get("recordId") || "").trim();
   const date = String(data.get("date"));
-  const { error } = await supabase.from("tasks").insert({ couple_id: context.couple.id, task_date: date, task_time: data.get("time") || null, title: String(data.get("title") || "").trim(), note: String(data.get("note") || "").trim(), created_by: session.user.id });
+  const payload = { task_date: date, task_time: data.get("time") || null, title: String(data.get("title") || "").trim(), note: String(data.get("note") || "").trim() };
+  const query = recordId
+    ? supabase.from("tasks").update(payload).eq("couple_id", context.couple.id).eq("id", recordId)
+    : supabase.from("tasks").insert({ ...payload, couple_id: context.couple.id, created_by: session.user.id });
+  const { error } = await query;
   if (error) throw error;
   selectedDate = date;
   localStorage.setItem("dogCat:selectedDate", date);
+  const url = new URL(location.href);
+  url.searchParams.set("date", date);
+  history.replaceState({}, "", url);
   updateChrome();
-  showToast("新的共同事项已经同步给对方。 ");
+  showToast(recordId ? "共同事项已经修改并同步。" : "新的共同事项已经同步给对方。 ");
 }
 
 async function saveEntry(form, data) {
@@ -792,15 +847,25 @@ async function saveNote(data) {
 }
 
 async function saveWish(data) {
-  const { error } = await supabase.from("wishes").insert({ couple_id: context.couple.id, title: String(data.get("title") || "").trim(), category: String(data.get("category")), owner_role: String(data.get("ownerRole")), planned_date: data.get("plannedDate") || null, note: String(data.get("note") || "").trim(), created_by: session.user.id });
+  const recordId = String(data.get("recordId") || "").trim();
+  const payload = { title: String(data.get("title") || "").trim(), category: String(data.get("category")), owner_role: String(data.get("ownerRole")), planned_date: data.get("plannedDate") || null, note: String(data.get("note") || "").trim() };
+  const query = recordId
+    ? supabase.from("wishes").update(payload).eq("couple_id", context.couple.id).eq("id", recordId)
+    : supabase.from("wishes").insert({ ...payload, couple_id: context.couple.id, created_by: session.user.id });
+  const { error } = await query;
   if (error) throw error;
-  showToast("新的愿望已经加入共同清单。 ");
+  showToast(recordId ? "愿望已经修改并同步。" : "新的愿望已经加入共同清单。 ");
 }
 
 async function saveMemory(data) {
-  const { error } = await supabase.from("memories").insert({ couple_id: context.couple.id, memory_date: String(data.get("date")), title: String(data.get("title") || "").trim(), note: String(data.get("note") || "").trim(), icon: String(data.get("icon") || "♥"), source_type: "manual", created_by: session.user.id });
+  const recordId = String(data.get("recordId") || "").trim();
+  const payload = { memory_date: String(data.get("date")), title: String(data.get("title") || "").trim(), note: String(data.get("note") || "").trim(), icon: String(data.get("icon") || "♥") };
+  const query = recordId
+    ? supabase.from("memories").update(payload).eq("couple_id", context.couple.id).eq("id", recordId).eq("source_type", "manual")
+    : supabase.from("memories").insert({ ...payload, couple_id: context.couple.id, source_type: "manual", created_by: session.user.id });
+  const { error } = await query;
   if (error) throw error;
-  showToast("这条共同回忆已经保存。 ");
+  showToast(recordId ? "共同回忆已经修改并同步。" : "这条共同回忆已经保存。 ");
 }
 
 async function toggleTask(taskId) {
@@ -878,6 +943,11 @@ function unsubscribeRealtime() {
 
 window.addEventListener("popstate", () => {
   currentPage = getPageFromUrl();
+  const urlDate = getDateFromUrl();
+  if (urlDate) {
+    selectedDate = urlDate;
+    localStorage.setItem("dogCat:selectedDate", urlDate);
+  }
   if (context?.membership) {
     updateChrome();
     renderCurrentPage();
