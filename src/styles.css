@@ -532,3 +532,9 @@ button:disabled { opacity: .55; cursor: not-allowed; }
   .workspace { padding-left: 30px; padding-right: 30px; }
   .auth-card { width: 900px; }
 }
+button[data-edit-task],
+button[data-edit-wish],
+button[data-edit-memory] {
+  color: #8b837c;
+  font-weight: 500;
+}
