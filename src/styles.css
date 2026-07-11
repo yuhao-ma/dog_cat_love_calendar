@@ -404,7 +404,7 @@ a { color: inherit; }
   .app-shell { grid-template-columns: 1fr; }
   .sidebar { position: static; height: auto; padding: 15px; }
   .brand, .sidebar-card { display: none; }
-  .side-nav { grid-template-columns: repeat(5,1fr); }
+  .side-nav { grid-template-columns: repeat(7,minmax(82px,1fr)); overflow-x: auto; }
   .side-nav a { grid-template-columns: 1fr; place-items: center; text-align: center; padding: 9px 5px; }
   .side-nav small { display: none; }
   .workspace { padding: 20px 16px 45px; }
@@ -748,4 +748,333 @@ button[data-edit-promise]:hover { color: #716a65; }
   .promise-board { grid-template-columns: 1fr; }
   .promise-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .promise-filter-control { max-width: 560px; }
+}
+
+/* V4.4 — 毛孩子小屋 */
+.plush-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 17px;
+}
+.plush-summary-card {
+  min-height: 126px;
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-lg);
+  background: #fff;
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+}
+.plush-summary-card span {
+  color: var(--muted);
+  font-size: 10px;
+}
+.plush-summary-card strong {
+  margin-top: 7px;
+  font-size: 25px;
+  letter-spacing: -.04em;
+}
+.plush-summary-card small {
+  margin-top: auto;
+  color: #9a9194;
+  font-size: 9px;
+  line-height: 1.55;
+}
+
+.plush-toolbar .button { white-space: nowrap; }
+.plush-child-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 17px;
+}
+.plush-child-card {
+  min-height: 340px;
+  padding: 0;
+  display: grid;
+  grid-template-columns: 210px minmax(0, 1fr);
+  overflow: hidden;
+}
+.plush-child-photo {
+  min-height: 340px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 25% 20%, rgba(255,255,255,.72), transparent 22%),
+    linear-gradient(145deg, #f8e9ed, #f3dfe5);
+  border-right: 1px solid var(--line);
+}
+.plush-child-photo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.plush-child-photo span { font-size: 64px; filter: drop-shadow(0 12px 16px rgba(106,73,83,.12)); }
+.plush-child-main {
+  min-width: 0;
+  padding: 21px;
+  display: flex;
+  flex-direction: column;
+}
+.plush-child-title {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 15px;
+}
+.plush-child-title h3 {
+  margin: 9px 0 0;
+  font-size: 21px;
+  letter-spacing: -.03em;
+}
+.plush-child-title small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 9px;
+}
+.plush-companion {
+  flex: 0 0 auto;
+  max-width: 138px;
+  padding: 7px 9px;
+  border-radius: 999px;
+  background: var(--blue-soft);
+  color: #617ea8;
+  font-size: 9px;
+  text-align: center;
+}
+.plush-current-status {
+  margin: 18px 0 0;
+  padding: 13px 14px;
+  border-radius: 13px;
+  background: var(--pink-pale);
+  border: 1px solid #f1dfe4;
+  color: #74676c;
+  font-size: 11px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+.plush-detail-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 13px;
+}
+.plush-detail-grid > div {
+  padding: 12px;
+  border-radius: 12px;
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+}
+.plush-detail-grid span {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 720;
+}
+.plush-detail-grid p {
+  margin: 6px 0 0;
+  color: #625a5d;
+  font-size: 10px;
+  line-height: 1.6;
+}
+.plush-child-footer {
+  margin-top: auto;
+  padding-top: 17px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 14px;
+}
+.plush-child-footer > span {
+  color: var(--muted);
+  font-size: 9px;
+}
+.plush-child-footer > div {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.plush-daily-panel { padding: 22px; }
+.plush-daily-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 18px;
+}
+.plush-filter-control {
+  max-width: 620px;
+  justify-content: flex-end;
+}
+.plush-filter-control .segment-button {
+  min-width: auto;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.plush-interaction-list { display: grid; gap: 11px; }
+.plush-interaction-item {
+  min-height: 92px;
+  padding: 13px 14px;
+  display: grid;
+  grid-template-columns: 74px auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  border-radius: 15px;
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+}
+.plush-interaction-time {
+  min-height: 62px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 4px;
+  border-radius: 13px;
+  background: #fff;
+  border: 1px solid var(--line);
+}
+.plush-interaction-time strong { font-size: 12px; }
+.plush-interaction-time span { font-size: 20px; }
+.plush-interaction-photo {
+  width: 82px;
+  height: 66px;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 12px;
+  background: #eee8e8;
+  cursor: zoom-in;
+}
+.plush-interaction-photo img { width: 100%; height: 100%; object-fit: cover; }
+.plush-interaction-copy { min-width: 0; }
+.plush-interaction-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.plush-interaction-title strong { font-size: 12px; }
+.plush-interaction-copy p {
+  margin: 7px 0 0;
+  color: #655d60;
+  font-size: 10px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+.plush-interaction-copy small {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 8px;
+}
+.plush-interaction-actions { display: flex; align-items: center; gap: 6px; }
+
+.plush-form-photo-row {
+  display: grid;
+  grid-template-columns: 126px minmax(0, 1fr);
+  align-items: center;
+  gap: 15px;
+  padding: 14px;
+  border-radius: 15px;
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+}
+.plush-form-preview {
+  width: 126px;
+  height: 104px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 13px;
+  background: #f1e8ea;
+  border: 1px solid #e7dadd;
+}
+.plush-form-preview img { width: 100%; height: 100%; object-fit: cover; }
+.plush-form-preview span { font-size: 39px; }
+.plush-photo-field small {
+  display: block;
+  margin-top: 7px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 500;
+  line-height: 1.55;
+}
+.plush-participant-fieldset {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.plush-participant-fieldset > p {
+  margin: 6px 0 10px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 500;
+}
+.plush-participant-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.plush-participant-options label { margin: 0; }
+.plush-participant-options input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.plush-participant-options span {
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  padding: 8px 11px;
+  border-radius: 11px;
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 10px;
+}
+.plush-participant-options input:checked + span {
+  background: var(--pink-soft);
+  border-color: #edc9d2;
+  color: var(--pink-dark);
+  box-shadow: 0 0 0 3px rgba(232,137,157,.07);
+}
+.photo-preview-modal { width: min(900px, calc(100vw - 52px)); }
+.photo-preview-modal > img {
+  display: block;
+  width: 100%;
+  max-height: calc(100vh - 180px);
+  object-fit: contain;
+  border-radius: 16px;
+  background: #f0ecec;
+}
+
+button[data-edit-plush-child],
+button[data-edit-plush-interaction] {
+  color: #8b837c;
+  font-weight: 600;
+}
+button[data-edit-plush-child]:hover,
+button[data-edit-plush-interaction]:hover { color: #716a65; }
+
+@media (max-width: 1320px) {
+  .plush-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .plush-child-grid { grid-template-columns: 1fr; }
+  .plush-child-card { grid-template-columns: 240px minmax(0, 1fr); }
+}
+
+@media (max-width: 980px) {
+  .side-nav { grid-template-columns: repeat(7, minmax(82px, 1fr)); overflow-x: auto; }
+  .plush-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .plush-child-card { grid-template-columns: 190px minmax(0, 1fr); }
+  .plush-daily-header { flex-direction: column; }
+  .plush-interaction-item { grid-template-columns: 70px minmax(0, 1fr) auto; }
+  .plush-interaction-photo { grid-column: 2; grid-row: 2; }
 }

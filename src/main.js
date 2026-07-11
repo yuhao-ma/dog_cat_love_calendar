@@ -5,13 +5,14 @@ const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
 const app = document.querySelector("#app");
 
-const VALID_PAGES = ["home", "schedule", "journal", "wishes", "promises", "memories"];
+const VALID_PAGES = ["home", "schedule", "journal", "wishes", "promises", "plush", "memories"];
 const PAGE_META = {
   home: { title: "今日小窝", eyebrow: "OUR DAILY SPACE", badge: "TODAY TOGETHER", hero: "今天也分享一点彼此的生活", description: "选择任意日期，查看那一天独立保存的事项、心情、留言和回应。", action: "记录心情", dateVisible: true },
   schedule: { title: "爱心日程", eyebrow: "LOVE SCHEDULE", badge: "PLANS FOR TWO", hero: "把想一起做的事情认真安排下来", description: "你们分别完成自己的打勾；双方完成后，事项会自动进入共同回忆。", action: "添加事项", dateVisible: true },
   journal: { title: "每日日记", eyebrow: "DAILY JOURNAL", badge: "HOW WE FEEL", hero: "认真记录今天，也温柔理解彼此", description: "每个人只编辑自己的记录；共享记录会同步显示给对方。", action: "写今日记录", dateVisible: true },
   wishes: { title: "愿望清单", eyebrow: "OUR WISH LIST", badge: "SOMEDAY TOGETHER", hero: "把想一起完成的未来放在这里", description: "愿望可以从一个想法，逐渐变成已经安排和真正完成的共同回忆。", action: "添加愿望", dateVisible: false },
   promises: { title: "相互的承诺", eyebrow: "OUR PROMISES", badge: "WORDS WE KEEP", hero: "把认真说过的话温柔地记下来", description: "承诺不是用来约束或考核彼此，而是帮助我们记住共同在意的关系方式。", action: "写下承诺", dateVisible: false },
+  plush: { title: "毛孩子小屋", eyebrow: "PLUSH FAMILY HOME", badge: "OUR LITTLE FAMILY", hero: "把陪伴我们的毛孩子也认真记录下来", description: "添加属于你们的毛孩子，记录他们现在陪着谁，以及每一天发生的可爱互动。", action: "添加毛孩子", dateVisible: true },
   memories: { title: "我们的回忆", eyebrow: "OUR MEMORIES", badge: "THINGS WE SHARED", hero: "我们认真共同生活过的证据", description: "共同完成的事项、实现的愿望和手动保存的纪念会汇成时间线。", action: "添加回忆", dateVisible: false }
 };
 const PERSON = {
@@ -20,6 +21,8 @@ const PERSON = {
 };
 const WISH_STAGES = ["刚刚想到", "正在计划", "已经安排", "已经完成"];
 const PROMISE_STATUSES = ["等待确认", "正在坚持", "需要重新聊聊", "暂时暂停", "已经完成"];
+const PLUSH_INTERACTION_TYPES = ["抱抱", "陪睡", "陪伴工作", "一起出门", "拍照", "换装", "聊天", "视频见面", "过生日", "其他"];
+const PLUSH_MOODS = ["🧸", "🥰", "😊", "😴", "🥺", "😎", "🎉", "🌙"];
 
 let supabase;
 let session = null;
@@ -29,6 +32,8 @@ let selectedDate = getDateFromUrl() || localStorage.getItem("dogCat:selectedDate
 let scheduleRange = sessionStorage.getItem("dogCat:scheduleRange") || "day";
 let wishFilter = sessionStorage.getItem("dogCat:wishFilter") || "全部";
 let promiseFilter = sessionStorage.getItem("dogCat:promiseFilter") || "全部";
+let plushFilter = sessionStorage.getItem("dogCat:plushFilter") || "全部";
+const photoUrlCache = new Map();
 let realtimeChannel = null;
 let refreshTimer = null;
 let bootToken = 0;
@@ -410,6 +415,7 @@ function renderAppShell() {
         ${navLink("journal", "✎", "每日日记", "心情与关系感受")}
         ${navLink("wishes", "☆", "愿望清单", "以后想一起完成")}
         ${navLink("promises", "∞", "相互的承诺", "认真说过的话")}
+        ${navLink("plush", "☁", "毛孩子小屋", "记录孩子们的互动")}
         ${navLink("memories", "◇", "我们的回忆", "共同生活时间线")}
       </nav>
       <div class="user-panel">
@@ -547,6 +553,7 @@ async function renderCurrentPage() {
     if (currentPage === "journal") await renderJournal();
     if (currentPage === "wishes") await renderWishes();
     if (currentPage === "promises") await renderPromises();
+    if (currentPage === "plush") await renderPlushHouse();
     if (currentPage === "memories") await renderMemories();
   } catch (error) {
     console.error(error);
@@ -749,6 +756,199 @@ function promiseCardHTML(promise, reviews) {
   </article>`;
 }
 
+
+function plushCompanionLabel(role) {
+  return {
+    dog: "现在陪着狗狗",
+    cat: "现在陪着咪咪",
+    both: "和我们都在一起",
+    none: "暂时在自己的小窝"
+  }[role] || "暂时在自己的小窝";
+}
+
+async function getSignedPhotoUrl(path) {
+  if (!path) return "";
+  const cached = photoUrlCache.get(path);
+  if (cached && cached.expiresAt > Date.now()) return cached.url;
+  const { data, error } = await supabase.storage.from("plush-photos").createSignedUrl(path, 3600);
+  if (error || !data?.signedUrl) {
+    console.warn("Unable to create signed photo URL", error);
+    return "";
+  }
+  photoUrlCache.set(path, { url: data.signedUrl, expiresAt: Date.now() + 50 * 60 * 1000 });
+  return data.signedUrl;
+}
+
+async function fetchPlushChildren(includeArchived = false) {
+  let query = supabase
+    .from("plush_children")
+    .select("*")
+    .eq("couple_id", context.couple.id)
+    .order("created_at", { ascending: true });
+  if (!includeArchived) query = query.eq("is_archived", false);
+  const { data, error } = await query;
+  if (error) throw error;
+  return data || [];
+}
+
+async function fetchPlushInteractions(date = selectedDate) {
+  const { data: interactions, error } = await supabase
+    .from("plush_interactions")
+    .select("*")
+    .eq("couple_id", context.couple.id)
+    .eq("interaction_date", date)
+    .order("interaction_time", { ascending: true, nullsFirst: false })
+    .order("created_at", { ascending: true });
+  if (error) throw error;
+
+  const ids = (interactions || []).map((item) => item.id);
+  if (!ids.length) return { interactions: [], people: [], children: [] };
+
+  const [peopleResult, childrenResult] = await Promise.all([
+    supabase.from("plush_interaction_people").select("*").eq("couple_id", context.couple.id).in("interaction_id", ids),
+    supabase.from("plush_interaction_children").select("*").eq("couple_id", context.couple.id).in("interaction_id", ids)
+  ]);
+  if (peopleResult.error) throw peopleResult.error;
+  if (childrenResult.error) throw childrenResult.error;
+  return {
+    interactions: interactions || [],
+    people: peopleResult.data || [],
+    children: childrenResult.data || []
+  };
+}
+
+async function renderPlushHouse() {
+  const [allChildren, bundle] = await Promise.all([
+    fetchPlushChildren(true),
+    fetchPlushInteractions(selectedDate)
+  ]);
+  const children = allChildren.filter((child) => !child.is_archived);
+
+  if (plushFilter !== "全部" && !children.some((child) => child.id === plushFilter)) {
+    plushFilter = "全部";
+    sessionStorage.setItem("dogCat:plushFilter", plushFilter);
+  }
+
+  const photoPaths = [...new Set([
+    ...children.map((child) => child.photo_path),
+    ...bundle.interactions.map((item) => item.photo_path)
+  ].filter(Boolean))];
+  const photoEntries = await Promise.all(photoPaths.map(async (path) => [path, await getSignedPhotoUrl(path)]));
+  const photoMap = Object.fromEntries(photoEntries);
+
+  const childrenMap = Object.fromEntries(allChildren.map((child) => [child.id, child]));
+  const peopleByInteraction = bundle.people.reduce((groups, item) => {
+    (groups[item.interaction_id] ||= []).push(item.role);
+    return groups;
+  }, {});
+  const childrenByInteraction = bundle.children.reduce((groups, item) => {
+    (groups[item.interaction_id] ||= []).push(item.child_id);
+    return groups;
+  }, {});
+
+  const visibleInteractions = bundle.interactions.filter((item) =>
+    plushFilter === "全部" || (childrenByInteraction[item.id] || []).includes(plushFilter)
+  );
+  const photoCount = bundle.interactions.filter((item) => item.photo_path).length;
+  const withDog = children.filter((child) => child.companion_role === "dog").length;
+  const withCat = children.filter((child) => child.companion_role === "cat").length;
+
+  document.querySelector("#pageRoot").innerHTML = `
+    <div class="plush-summary">
+      <div class="plush-summary-card"><span>小屋里的毛孩子</span><strong>${children.length}</strong><small>可以继续添加新的家庭成员</small></div>
+      <div class="plush-summary-card"><span>${shortDate(selectedDate)}的互动</span><strong>${bundle.interactions.length}</strong><small>抱抱、陪伴和共同的小剧情</small></div>
+      <div class="plush-summary-card"><span>今天留下的照片</span><strong>${photoCount}</strong><small>照片只对你们两个人可见</small></div>
+      <div class="plush-summary-card"><span>当前陪伴分布</span><strong>${withDog} / ${withCat}</strong><small>狗狗身边 / 咪咪身边</small></div>
+    </div>
+
+    <div class="section-toolbar plush-toolbar">
+      <div class="section-heading">
+        <h2>我们的毛孩子</h2>
+        <p>每个孩子都可以有自己的名字、照片、性格、喜好和当前状态。</p>
+      </div>
+      <button class="button secondary" data-add-plush-interaction>＋ 记录${shortDate(selectedDate)}的互动</button>
+    </div>
+
+    <div class="plush-child-grid">
+      ${children.length ? children.map((child) => plushChildCardHTML(child, photoMap[child.photo_path] || "")).join("") : `
+        <div class="empty-state full-span">
+          小屋里还没有毛孩子。<br>
+          <button class="button primary small" data-add-plush-child style="margin-top:12px">添加第一个毛孩子</button>
+        </div>`}
+    </div>
+
+    <section class="card plush-daily-panel">
+      <div class="plush-daily-header">
+        <div class="card-title">
+          <span class="card-title-icon">☁</span>
+          <div><h3>${fullDate(selectedDate)}的互动记录</h3><p>切换日期后，每一天都会显示独立保存的互动内容。</p></div>
+        </div>
+        <div class="segment-control plush-filter-control">
+          <button class="segment-button ${plushFilter === "全部" ? "active" : ""}" data-plush-filter="全部">全部</button>
+          ${children.map((child) => `<button class="segment-button ${plushFilter === child.id ? "active" : ""}" data-plush-filter="${child.id}">${escapeHTML(child.name)}</button>`).join("")}
+        </div>
+      </div>
+      <div class="plush-interaction-list">
+        ${visibleInteractions.length ? visibleInteractions.map((interaction) => plushInteractionHTML(
+          interaction,
+          peopleByInteraction[interaction.id] || [],
+          childrenByInteraction[interaction.id] || [],
+          childrenMap,
+          photoMap[interaction.photo_path] || ""
+        )).join("") : `
+          <div class="empty-state compact">
+            ${plushFilter === "全部" ? "这一天还没有记录互动。" : "这一天还没有与这个毛孩子相关的互动。"}<br>
+            <button class="button primary small" data-add-plush-interaction data-preset-child="${plushFilter === "全部" ? "" : plushFilter}" style="margin-top:12px">记录一次互动</button>
+          </div>`}
+      </div>
+    </section>`;
+}
+
+function plushChildCardHTML(child, photoUrl) {
+  const arrival = child.arrival_date ? `来到身边：${shortDate(child.arrival_date)}` : "还没有填写来到身边的日期";
+  return `<article class="card plush-child-card">
+    <div class="plush-child-photo">
+      ${photoUrl ? `<img src="${escapeHTML(photoUrl)}" alt="${escapeHTML(child.name)}的照片">` : `<span>🧸</span>`}
+    </div>
+    <div class="plush-child-main">
+      <div class="plush-child-title">
+        <div><span class="status-label">${escapeHTML(child.child_type || "毛绒玩偶")}</span><h3>${escapeHTML(child.name)}</h3>${child.nickname ? `<small>也叫 ${escapeHTML(child.nickname)}</small>` : ""}</div>
+        <span class="plush-companion">${escapeHTML(plushCompanionLabel(child.companion_role))}</span>
+      </div>
+      <p class="plush-current-status">${escapeHTML(child.current_status || "今天安静地待在小屋里。")}</p>
+      <div class="plush-detail-grid">
+        <div><span>性格</span><p>${escapeHTML(child.personality || "还没有写下性格")}</p></div>
+        <div><span>喜欢</span><p>${escapeHTML(child.likes || "还没有写下喜欢的事情")}</p></div>
+      </div>
+      <div class="plush-child-footer"><span>${arrival}</span><div>
+        <button class="button primary small" data-add-plush-interaction data-preset-child="${child.id}">记录互动</button>
+        <button class="button secondary small" data-edit-plush-child="${child.id}">编辑</button>
+        <button class="button danger small" data-archive-plush-child="${child.id}">移出小屋</button>
+      </div></div>
+    </div>
+  </article>`;
+}
+
+function plushInteractionHTML(interaction, roles, childIds, childrenMap, photoUrl) {
+  const roleLabels = roles.map((role) => `${PERSON[role]?.icon || "♡"} ${PERSON[role]?.name || role}`);
+  const childLabels = childIds.map((id) => childrenMap[id]?.name).filter(Boolean).map((name) => `🧸 ${name}`);
+  const participantText = [...roleLabels, ...childLabels].join("、") || "小屋成员";
+  const author = profileFor(interaction.created_by)?.display_name || "我们";
+  return `<article class="plush-interaction-item">
+    <div class="plush-interaction-time"><strong>${timeText(interaction.interaction_time) || "全天"}</strong><span>${escapeHTML(interaction.mood_emoji || "🧸")}</span></div>
+    ${photoUrl ? `<button class="plush-interaction-photo" type="button" data-photo-preview="${escapeHTML(photoUrl)}"><img src="${escapeHTML(photoUrl)}" alt="互动照片"></button>` : ""}
+    <div class="plush-interaction-copy">
+      <div class="plush-interaction-title"><span class="status-label">${escapeHTML(interaction.interaction_type)}</span><strong>${escapeHTML(participantText)}</strong></div>
+      <p>${escapeHTML(interaction.description || "留下了一次温柔的陪伴。")}</p>
+      <small>由 ${escapeHTML(author)} 记录</small>
+    </div>
+    <div class="plush-interaction-actions">
+      <button class="button secondary small" data-edit-plush-interaction="${interaction.id}">编辑</button>
+      <button class="delete-button" data-delete-plush-interaction="${interaction.id}" title="删除互动">×</button>
+    </div>
+  </article>`;
+}
+
 async function renderMemories() {
   const { data, error } = await supabase.from("memories").select("*").eq("couple_id", context.couple.id).order("memory_date", { ascending: false }).order("created_at", { ascending: false });
   if (error) throw error;
@@ -810,6 +1010,155 @@ async function openWishModal(wishId = null) {
 }
 
 
+
+async function openPlushChildModal(childId = null) {
+  let existing = null;
+  let photoUrl = "";
+  if (childId) {
+    const { data, error } = await supabase
+      .from("plush_children")
+      .select("*")
+      .eq("couple_id", context.couple.id)
+      .eq("id", childId)
+      .single();
+    if (error) { showToast(getErrorMessage(error), true); return; }
+    existing = data;
+    photoUrl = await getSignedPhotoUrl(existing.photo_path);
+  }
+
+  const companions = [
+    ["dog", "陪着狗狗"],
+    ["cat", "陪着咪咪"],
+    ["both", "和我们都在一起"],
+    ["none", "暂时在自己的小窝"]
+  ];
+  openModal(`<section class="modal wide">${modalHeader(existing ? "EDIT PLUSH CHILD" : "NEW PLUSH CHILD", existing ? "修改毛孩子档案" : "添加一个毛孩子")}
+    <form id="plushChildForm" class="form-grid">
+      <input type="hidden" name="recordId" value="${existing?.id || ""}">
+      <input type="hidden" name="oldPhotoPath" value="${escapeHTML(existing?.photo_path || "")}">
+      <div class="plush-form-photo-row">
+        <div class="plush-form-preview">${photoUrl ? `<img src="${escapeHTML(photoUrl)}" alt="当前照片">` : `<span>🧸</span>`}</div>
+        <label class="plush-photo-field">孩子的照片（可选）
+          <input name="photo" type="file" accept="image/jpeg,image/png,image/webp">
+          <small>支持 JPG、PNG 或 WebP，最大 5 MB。照片只对你们两个人可见。</small>
+        </label>
+      </div>
+      ${existing?.photo_path ? `<label class="checkbox-row"><input type="checkbox" name="removePhoto"> 删除当前照片</label>` : ""}
+      <div class="form-row">
+        <label>名字<input name="name" required maxlength="60" placeholder="例如：布鲁克" value="${escapeHTML(existing?.name || "")}"></label>
+        <label>昵称（可选）<input name="nickname" maxlength="60" placeholder="例如：小布" value="${escapeHTML(existing?.nickname || "")}"></label>
+      </div>
+      <div class="form-row">
+        <label>类型<input name="childType" maxlength="60" placeholder="例如：小熊、兔子、小狗" value="${escapeHTML(existing?.child_type || "毛绒玩偶")}"></label>
+        <label>来到身边的日期<input name="arrivalDate" type="date" value="${existing?.arrival_date || ""}"></label>
+      </div>
+      <label>现在陪着谁<select name="companionRole">${companions.map(([value, label]) => `<option value="${value}" ${existing?.companion_role === value || (!existing && value === "both") ? "selected" : ""}>${label}</option>`).join("")}</select></label>
+      <div class="form-row">
+        <label>性格<textarea name="personality" maxlength="300" placeholder="例如：安静、可靠，但偶尔有一点调皮。">${escapeHTML(existing?.personality || "")}</textarea></label>
+        <label>喜欢的事情<textarea name="likes" maxlength="300" placeholder="例如：坐在电脑旁边陪工作。">${escapeHTML(existing?.likes || "")}</textarea></label>
+      </div>
+      <label>当前状态<textarea name="currentStatus" maxlength="300" placeholder="例如：今天正在陪狗狗工作。">${escapeHTML(existing?.current_status || "")}</textarea></label>
+      <p class="form-message" data-form-message></p>
+      <div class="modal-actions"><button type="button" class="button secondary" data-close-modal>取消</button><button class="button primary" type="submit">${existing ? "保存修改" : "把孩子带回小屋"}</button></div>
+    </form>
+  </section>`);
+}
+
+async function openPlushInteractionModal(interactionId = null, presetChildId = "") {
+  const children = await fetchPlushChildren();
+  if (!children.length) {
+    showToast("请先添加至少一个毛孩子，再记录互动。", true);
+    openPlushChildModal();
+    return;
+  }
+
+  let existing = null;
+  let selectedRoles = [];
+  let selectedChildren = presetChildId ? [presetChildId] : [];
+  let photoUrl = "";
+  if (interactionId) {
+    const [interactionResult, peopleResult, childrenResult] = await Promise.all([
+      supabase.from("plush_interactions").select("*").eq("couple_id", context.couple.id).eq("id", interactionId).single(),
+      supabase.from("plush_interaction_people").select("role").eq("couple_id", context.couple.id).eq("interaction_id", interactionId),
+      supabase.from("plush_interaction_children").select("child_id").eq("couple_id", context.couple.id).eq("interaction_id", interactionId)
+    ]);
+    if (interactionResult.error) { showToast(getErrorMessage(interactionResult.error), true); return; }
+    if (peopleResult.error) { showToast(getErrorMessage(peopleResult.error), true); return; }
+    if (childrenResult.error) { showToast(getErrorMessage(childrenResult.error), true); return; }
+    existing = interactionResult.data;
+    selectedRoles = (peopleResult.data || []).map((item) => item.role);
+    selectedChildren = (childrenResult.data || []).map((item) => item.child_id);
+    photoUrl = await getSignedPhotoUrl(existing.photo_path);
+  }
+
+  openModal(`<section class="modal wide">${modalHeader(existing ? "EDIT INTERACTION" : "NEW INTERACTION", existing ? "修改毛孩子互动" : `记录${shortDate(selectedDate)}的一次互动`)}
+    <form id="plushInteractionForm" class="form-grid">
+      <input type="hidden" name="recordId" value="${existing?.id || ""}">
+      <input type="hidden" name="oldPhotoPath" value="${escapeHTML(existing?.photo_path || "")}">
+      <fieldset class="plush-participant-fieldset">
+        <legend>谁参与了这次互动？</legend>
+        <p>至少选择一个毛孩子，也可以同时选择狗狗和咪咪。</p>
+        <div class="plush-participant-options">
+          <label><input type="checkbox" name="peopleRoles" value="dog" ${selectedRoles.includes("dog") ? "checked" : ""}><span>🐶 狗狗</span></label>
+          <label><input type="checkbox" name="peopleRoles" value="cat" ${selectedRoles.includes("cat") ? "checked" : ""}><span>🐱 咪咪</span></label>
+          ${children.map((child) => `<label><input type="checkbox" name="childIds" value="${child.id}" ${selectedChildren.includes(child.id) ? "checked" : ""}><span>🧸 ${escapeHTML(child.name)}</span></label>`).join("")}
+        </div>
+      </fieldset>
+      <div class="form-row">
+        <label>互动类型<select name="interactionType">${PLUSH_INTERACTION_TYPES.map((item) => `<option ${existing?.interaction_type === item ? "selected" : ""}>${item}</option>`).join("")}</select></label>
+        <label>当时的状态<select name="moodEmoji">${PLUSH_MOODS.map((emoji) => `<option ${existing?.mood_emoji === emoji ? "selected" : ""}>${emoji}</option>`).join("")}</select></label>
+      </div>
+      <div class="form-row">
+        <label>日期<input name="interactionDate" type="date" required value="${existing?.interaction_date || selectedDate}"></label>
+        <label>时间（可选）<input name="interactionTime" type="time" value="${timeText(existing?.interaction_time)}"></label>
+      </div>
+      <label>发生了什么<textarea name="description" maxlength="600" placeholder="例如：布朗尼今天陪咪咪睡了午觉，布鲁克在视频里和她说了晚安。">${escapeHTML(existing?.description || "")}</textarea></label>
+      <div class="plush-form-photo-row">
+        <div class="plush-form-preview">${photoUrl ? `<img src="${escapeHTML(photoUrl)}" alt="当前互动照片">` : `<span>📷</span>`}</div>
+        <label class="plush-photo-field">互动照片（可选）
+          <input name="photo" type="file" accept="image/jpeg,image/png,image/webp">
+          <small>支持 JPG、PNG 或 WebP，最大 5 MB。</small>
+        </label>
+      </div>
+      ${existing?.photo_path ? `<label class="checkbox-row"><input type="checkbox" name="removePhoto"> 删除当前照片</label>` : ""}
+      <p class="form-message" data-form-message></p>
+      <div class="modal-actions"><button type="button" class="button secondary" data-close-modal>取消</button><button class="button primary" type="submit">${existing ? "保存修改" : "保存这次互动"}</button></div>
+    </form>
+  </section>`);
+}
+
+function openPhotoPreview(url) {
+  openModal(`<section class="modal photo-preview-modal">${modalHeader("PRIVATE PHOTO", "只属于你们的小屋照片")}<img src="${escapeHTML(url)}" alt="毛孩子互动照片"></section>`);
+}
+
+function validateImageFile(file) {
+  if (!file) return;
+  const allowed = ["image/jpeg", "image/png", "image/webp"];
+  if (!allowed.includes(file.type)) throw new Error("照片只支持 JPG、PNG 或 WebP。");
+  if (file.size > 5 * 1024 * 1024) throw new Error("照片不能超过 5 MB。");
+}
+
+async function uploadPlushPhoto(file, entityType, entityId) {
+  validateImageFile(file);
+  const extension = (file.name.split(".").pop() || "jpg").toLowerCase().replace(/[^a-z0-9]/g, "") || "jpg";
+  const randomName = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const path = `${context.couple.id}/${entityType}/${entityId}/${randomName}.${extension}`;
+  const { error } = await supabase.storage.from("plush-photos").upload(path, file, {
+    cacheControl: "3600",
+    upsert: false,
+    contentType: file.type
+  });
+  if (error) throw error;
+  return path;
+}
+
+async function removePlushPhoto(path) {
+  if (!path) return;
+  const { error } = await supabase.storage.from("plush-photos").remove([path]);
+  if (error) console.warn("Unable to remove old plush photo", error);
+  photoUrlCache.delete(path);
+}
+
 async function openPromiseModal(promiseId = null) {
   let existing = null;
   if (promiseId) {
@@ -843,6 +1192,7 @@ function handlePageAction() {
   if (currentPage === "schedule") openTaskModal();
   if (currentPage === "wishes") openWishModal();
   if (currentPage === "promises") openPromiseModal();
+  if (currentPage === "plush") openPlushChildModal();
   if (currentPage === "memories") openMemoryModal();
 }
 
@@ -858,6 +1208,15 @@ async function handleDelegatedClick(event) {
   const editWish = event.target.closest("[data-edit-wish]");
   if (editWish) { await openWishModal(editWish.dataset.editWish); return; }
   if (event.target.closest("[data-add-promise]")) { openPromiseModal(); return; }
+  if (event.target.closest("[data-add-plush-child]")) { openPlushChildModal(); return; }
+  const editPlushChild = event.target.closest("[data-edit-plush-child]");
+  if (editPlushChild) { await openPlushChildModal(editPlushChild.dataset.editPlushChild); return; }
+  const addPlushInteraction = event.target.closest("[data-add-plush-interaction]");
+  if (addPlushInteraction) { await openPlushInteractionModal(null, addPlushInteraction.dataset.presetChild || ""); return; }
+  const editPlushInteraction = event.target.closest("[data-edit-plush-interaction]");
+  if (editPlushInteraction) { await openPlushInteractionModal(editPlushInteraction.dataset.editPlushInteraction); return; }
+  const photoPreview = event.target.closest("[data-photo-preview]");
+  if (photoPreview) { openPhotoPreview(photoPreview.dataset.photoPreview); return; }
   const editPromise = event.target.closest("[data-edit-promise]");
   if (editPromise) { await openPromiseModal(editPromise.dataset.editPromise); return; }
   const reviewPromise = event.target.closest("[data-review-promise]");
@@ -875,6 +1234,8 @@ async function handleDelegatedClick(event) {
   if (filter) { wishFilter = filter.dataset.wishFilter; sessionStorage.setItem("dogCat:wishFilter", wishFilter); renderCurrentPage(); return; }
   const promiseFilterButton = event.target.closest("[data-promise-filter]");
   if (promiseFilterButton) { promiseFilter = promiseFilterButton.dataset.promiseFilter; sessionStorage.setItem("dogCat:promiseFilter", promiseFilter); renderCurrentPage(); return; }
+  const plushFilterButton = event.target.closest("[data-plush-filter]");
+  if (plushFilterButton) { plushFilter = plushFilterButton.dataset.plushFilter; sessionStorage.setItem("dogCat:plushFilter", plushFilter); renderCurrentPage(); return; }
   const toggle = event.target.closest("[data-toggle-task]");
   if (toggle) { await toggleTask(toggle.dataset.toggleTask); return; }
   const deleteTask = event.target.closest("[data-delete-task]");
@@ -889,13 +1250,17 @@ async function handleDelegatedClick(event) {
   if (confirmPromiseButton) { await confirmPromise(confirmPromiseButton.dataset.confirmPromise); return; }
   const deletePromiseButton = event.target.closest("[data-delete-promise]");
   if (deletePromiseButton) { await removePromise(deletePromiseButton.dataset.deletePromise); return; }
+  const archivePlushChildButton = event.target.closest("[data-archive-plush-child]");
+  if (archivePlushChildButton) { await archivePlushChild(archivePlushChildButton.dataset.archivePlushChild); return; }
+  const deletePlushInteractionButton = event.target.closest("[data-delete-plush-interaction]");
+  if (deletePlushInteractionButton) { await removePlushInteraction(deletePlushInteractionButton.dataset.deletePlushInteraction); return; }
   const deleteMemory = event.target.closest("[data-delete-memory]");
   if (deleteMemory) { await removeMemory(deleteMemory.dataset.deleteMemory); }
 }
 
 async function handleDelegatedSubmit(event) {
   const form = event.target;
-  if (!["taskForm", "entryForm", "noteForm", "wishForm", "promiseForm", "promiseReviewForm", "memoryForm"].includes(form.id)) return;
+  if (!["taskForm", "entryForm", "noteForm", "wishForm", "promiseForm", "promiseReviewForm", "plushChildForm", "plushInteractionForm", "memoryForm"].includes(form.id)) return;
   event.preventDefault();
   const button = form.querySelector("button[type=submit]");
   const data = new FormData(form);
@@ -907,6 +1272,8 @@ async function handleDelegatedSubmit(event) {
     if (form.id === "wishForm") await saveWish(data);
     if (form.id === "promiseForm") await savePromise(data);
     if (form.id === "promiseReviewForm") await savePromiseReview(data);
+    if (form.id === "plushChildForm") await savePlushChild(form, data);
+    if (form.id === "plushInteractionForm") await savePlushInteraction(form, data);
     if (form.id === "memoryForm") await saveMemory(data);
     closeModal();
     await renderCurrentPage();
@@ -992,6 +1359,120 @@ async function savePromiseReview(data) {
   showToast("这次承诺回顾已经同步给对方。");
 }
 
+
+async function savePlushChild(form, data) {
+  const recordId = String(data.get("recordId") || "").trim();
+  const oldPhotoPath = String(data.get("oldPhotoPath") || "").trim();
+  const photoFile = form.querySelector('input[name="photo"]')?.files?.[0] || null;
+  if (photoFile) validateImageFile(photoFile);
+
+  const payload = {
+    name: String(data.get("name") || "").trim(),
+    nickname: String(data.get("nickname") || "").trim(),
+    child_type: String(data.get("childType") || "毛绒玩偶").trim() || "毛绒玩偶",
+    arrival_date: data.get("arrivalDate") || null,
+    companion_role: String(data.get("companionRole") || "both"),
+    personality: String(data.get("personality") || "").trim(),
+    likes: String(data.get("likes") || "").trim(),
+    current_status: String(data.get("currentStatus") || "").trim()
+  };
+
+  let childId = recordId;
+  if (recordId) {
+    const { data: updated, error } = await supabase
+      .from("plush_children")
+      .update(payload)
+      .eq("couple_id", context.couple.id)
+      .eq("id", recordId)
+      .select("id")
+      .single();
+    if (error) throw error;
+    childId = updated.id;
+  } else {
+    const { data: inserted, error } = await supabase
+      .from("plush_children")
+      .insert({ ...payload, couple_id: context.couple.id, created_by: session.user.id })
+      .select("id")
+      .single();
+    if (error) throw error;
+    childId = inserted.id;
+  }
+
+  if (photoFile) {
+    const newPath = await uploadPlushPhoto(photoFile, "children", childId);
+    const { error } = await supabase
+      .from("plush_children")
+      .update({ photo_path: newPath })
+      .eq("couple_id", context.couple.id)
+      .eq("id", childId);
+    if (error) throw error;
+    if (oldPhotoPath && oldPhotoPath !== newPath) await removePlushPhoto(oldPhotoPath);
+  } else if (data.get("removePhoto") && oldPhotoPath) {
+    const { error } = await supabase
+      .from("plush_children")
+      .update({ photo_path: null })
+      .eq("couple_id", context.couple.id)
+      .eq("id", childId);
+    if (error) throw error;
+    await removePlushPhoto(oldPhotoPath);
+  }
+
+  showToast(recordId ? "毛孩子档案已经修改并同步。" : "新的毛孩子已经来到小屋。");
+}
+
+async function savePlushInteraction(form, data) {
+  const recordId = String(data.get("recordId") || "").trim();
+  const oldPhotoPath = String(data.get("oldPhotoPath") || "").trim();
+  const peopleRoles = data.getAll("peopleRoles").map(String);
+  const childIds = data.getAll("childIds").map(String);
+  if (!childIds.length) throw new Error("请至少选择一个毛孩子参与这次互动。");
+
+  const photoFile = form.querySelector('input[name="photo"]')?.files?.[0] || null;
+  if (photoFile) validateImageFile(photoFile);
+
+  const interactionDate = String(data.get("interactionDate") || selectedDate);
+  const { data: savedId, error } = await supabase.rpc("save_plush_interaction", {
+    p_interaction_id: recordId || null,
+    p_couple_id: context.couple.id,
+    p_interaction_date: interactionDate,
+    p_interaction_time: data.get("interactionTime") || null,
+    p_interaction_type: String(data.get("interactionType") || "其他"),
+    p_description: String(data.get("description") || "").trim(),
+    p_mood_emoji: String(data.get("moodEmoji") || "🧸"),
+    p_people_roles: peopleRoles,
+    p_child_ids: childIds
+  });
+  if (error) throw error;
+
+  const interactionId = savedId || recordId;
+  if (photoFile) {
+    const newPath = await uploadPlushPhoto(photoFile, "interactions", interactionId);
+    const { error: updateError } = await supabase
+      .from("plush_interactions")
+      .update({ photo_path: newPath })
+      .eq("couple_id", context.couple.id)
+      .eq("id", interactionId);
+    if (updateError) throw updateError;
+    if (oldPhotoPath && oldPhotoPath !== newPath) await removePlushPhoto(oldPhotoPath);
+  } else if (data.get("removePhoto") && oldPhotoPath) {
+    const { error: updateError } = await supabase
+      .from("plush_interactions")
+      .update({ photo_path: null })
+      .eq("couple_id", context.couple.id)
+      .eq("id", interactionId);
+    if (updateError) throw updateError;
+    await removePlushPhoto(oldPhotoPath);
+  }
+
+  selectedDate = interactionDate;
+  localStorage.setItem("dogCat:selectedDate", interactionDate);
+  const url = new URL(location.href);
+  url.searchParams.set("date", interactionDate);
+  history.replaceState({}, "", url);
+  updateChrome();
+  showToast(recordId ? "互动记录已经修改并同步。" : "这次互动已经保存到毛孩子小屋。");
+}
+
 async function saveMemory(data) {
   const recordId = String(data.get("recordId") || "").trim();
   const payload = { memory_date: String(data.get("date")), title: String(data.get("title") || "").trim(), note: String(data.get("note") || "").trim(), icon: String(data.get("icon") || "♥") };
@@ -1055,6 +1536,46 @@ async function removePromise(promiseId) {
   if (error) showToast(getErrorMessage(error), true); else { showToast("这份承诺已经删除。"); await renderCurrentPage(); }
 }
 
+
+async function archivePlushChild(childId) {
+  if (!window.confirm("确定把这个毛孩子移出小屋吗？历史互动仍会保留。")) return;
+  const { error } = await supabase
+    .from("plush_children")
+    .update({ is_archived: true })
+    .eq("couple_id", context.couple.id)
+    .eq("id", childId);
+  if (error) {
+    showToast(getErrorMessage(error), true);
+    return;
+  }
+  if (plushFilter === childId) {
+    plushFilter = "全部";
+    sessionStorage.setItem("dogCat:plushFilter", plushFilter);
+  }
+  showToast("这个毛孩子已经移出小屋，过去的互动仍然保留。");
+  await renderCurrentPage();
+}
+
+async function removePlushInteraction(interactionId) {
+  if (!window.confirm("确定删除这条毛孩子互动吗？")) return;
+  const { data: existing, error: readError } = await supabase
+    .from("plush_interactions")
+    .select("photo_path")
+    .eq("couple_id", context.couple.id)
+    .eq("id", interactionId)
+    .maybeSingle();
+  if (readError) { showToast(getErrorMessage(readError), true); return; }
+  const { error } = await supabase
+    .from("plush_interactions")
+    .delete()
+    .eq("couple_id", context.couple.id)
+    .eq("id", interactionId);
+  if (error) { showToast(getErrorMessage(error), true); return; }
+  if (existing?.photo_path) await removePlushPhoto(existing.photo_path);
+  showToast("这条互动已经删除。");
+  await renderCurrentPage();
+}
+
 async function removeMemory(memoryId) {
   if (!window.confirm("确定删除这条手动回忆吗？")) return;
   const { error } = await supabase.from("memories").delete().eq("id", memoryId);
@@ -1067,7 +1588,7 @@ function handleEscape(event) {
 
 function subscribeRealtime() {
   unsubscribeRealtime();
-  const tables = ["daily_notes", "daily_entries", "tasks", "responses", "wishes", "promises", "promise_reviews", "memories"];
+  const tables = ["daily_notes", "daily_entries", "tasks", "responses", "wishes", "promises", "promise_reviews", "plush_children", "plush_interactions", "plush_interaction_people", "plush_interaction_children", "memories"];
   realtimeChannel = supabase.channel(`couple-${context.couple.id}`);
   tables.forEach((table) => realtimeChannel.on("postgres_changes", { event: "*", schema: "public", table, filter: `couple_id=eq.${context.couple.id}` }, scheduleRealtimeRefresh));
   realtimeChannel.subscribe((status) => {
