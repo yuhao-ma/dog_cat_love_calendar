@@ -5,12 +5,13 @@ const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
 const app = document.querySelector("#app");
 
-const VALID_PAGES = ["home", "schedule", "journal", "wishes", "memories"];
+const VALID_PAGES = ["home", "schedule", "journal", "wishes", "promises", "memories"];
 const PAGE_META = {
   home: { title: "今日小窝", eyebrow: "OUR DAILY SPACE", badge: "TODAY TOGETHER", hero: "今天也分享一点彼此的生活", description: "选择任意日期，查看那一天独立保存的事项、心情、留言和回应。", action: "记录心情", dateVisible: true },
   schedule: { title: "爱心日程", eyebrow: "LOVE SCHEDULE", badge: "PLANS FOR TWO", hero: "把想一起做的事情认真安排下来", description: "你们分别完成自己的打勾；双方完成后，事项会自动进入共同回忆。", action: "添加事项", dateVisible: true },
   journal: { title: "每日日记", eyebrow: "DAILY JOURNAL", badge: "HOW WE FEEL", hero: "认真记录今天，也温柔理解彼此", description: "每个人只编辑自己的记录；共享记录会同步显示给对方。", action: "写今日记录", dateVisible: true },
   wishes: { title: "愿望清单", eyebrow: "OUR WISH LIST", badge: "SOMEDAY TOGETHER", hero: "把想一起完成的未来放在这里", description: "愿望可以从一个想法，逐渐变成已经安排和真正完成的共同回忆。", action: "添加愿望", dateVisible: false },
+  promises: { title: "相互的承诺", eyebrow: "OUR PROMISES", badge: "WORDS WE KEEP", hero: "把认真说过的话温柔地记下来", description: "承诺不是用来约束或考核彼此，而是帮助我们记住共同在意的关系方式。", action: "写下承诺", dateVisible: false },
   memories: { title: "我们的回忆", eyebrow: "OUR MEMORIES", badge: "THINGS WE SHARED", hero: "我们认真共同生活过的证据", description: "共同完成的事项、实现的愿望和手动保存的纪念会汇成时间线。", action: "添加回忆", dateVisible: false }
 };
 const PERSON = {
@@ -18,6 +19,7 @@ const PERSON = {
   cat: { name: "咪咪", icon: "🐱" }
 };
 const WISH_STAGES = ["刚刚想到", "正在计划", "已经安排", "已经完成"];
+const PROMISE_STATUSES = ["等待确认", "正在坚持", "需要重新聊聊", "暂时暂停", "已经完成"];
 
 let supabase;
 let session = null;
@@ -26,6 +28,7 @@ let currentPage = getPageFromUrl();
 let selectedDate = getDateFromUrl() || localStorage.getItem("dogCat:selectedDate") || todayISO();
 let scheduleRange = sessionStorage.getItem("dogCat:scheduleRange") || "day";
 let wishFilter = sessionStorage.getItem("dogCat:wishFilter") || "全部";
+let promiseFilter = sessionStorage.getItem("dogCat:promiseFilter") || "全部";
 let realtimeChannel = null;
 let refreshTimer = null;
 let bootToken = 0;
@@ -406,6 +409,7 @@ function renderAppShell() {
         ${navLink("schedule", "✓", "爱心日程", "共同计划与打勾")}
         ${navLink("journal", "✎", "每日日记", "心情与关系感受")}
         ${navLink("wishes", "☆", "愿望清单", "以后想一起完成")}
+        ${navLink("promises", "∞", "相互的承诺", "认真说过的话")}
         ${navLink("memories", "◇", "我们的回忆", "共同生活时间线")}
       </nav>
       <div class="user-panel">
@@ -542,6 +546,7 @@ async function renderCurrentPage() {
     if (currentPage === "schedule") await renderSchedule();
     if (currentPage === "journal") await renderJournal();
     if (currentPage === "wishes") await renderWishes();
+    if (currentPage === "promises") await renderPromises();
     if (currentPage === "memories") await renderMemories();
   } catch (error) {
     console.error(error);
@@ -677,6 +682,73 @@ function wishCardHTML(wish) {
   return `<article class="card wish-card"><div class="wish-top"><span class="status-label">${escapeHTML(wish.category)}</span><span>${ownerIcon}</span></div><h3>${escapeHTML(wish.title)}</h3><p>${escapeHTML(wish.note || "以后一起完成。")}</p><div class="wish-meta">${wish.planned_date ? `计划日期：${shortDate(wish.planned_date)}` : "暂时没有设定日期"}</div><div class="wish-bottom"><div class="wish-status-line"><span class="status-label">${WISH_STAGES[wish.status]}</span><span>${wish.status + 1}/4</span></div><div class="stage-track">${[0,1,2,3].map((index) => `<span class="${index <= wish.status ? "active" : ""}"></span>`).join("")}</div><div class="wish-actions"><button class="button primary small" data-advance-wish="${wish.id}" ${wish.status >= 3 ? "disabled" : ""}>${wish.status >= 3 ? "已经完成" : "推进一步"}</button><button class="button secondary small" data-edit-wish="${wish.id}">编辑</button><button class="button danger small" data-delete-wish="${wish.id}">删除</button></div></div></article>`;
 }
 
+
+async function renderPromises() {
+  const coupleId = context.couple.id;
+  const [promiseResult, reviewResult] = await Promise.all([
+    supabase.from("promises").select("*").eq("couple_id", coupleId).order("created_at", { ascending: false }),
+    supabase.from("promise_reviews").select("*").eq("couple_id", coupleId).order("review_date", { ascending: false }).order("created_at", { ascending: false })
+  ]);
+  if (promiseResult.error) throw promiseResult.error;
+  if (reviewResult.error) throw reviewResult.error;
+
+  const reviewsByPromise = (reviewResult.data || []).reduce((groups, review) => {
+    (groups[review.promise_id] ||= []).push(review);
+    return groups;
+  }, {});
+  const filters = ["全部", ...PROMISE_STATUSES];
+  const promises = (promiseResult.data || []).filter((promise) => promiseFilter === "全部" || PROMISE_STATUSES[promise.status] === promiseFilter);
+  const counts = (promiseResult.data || []).reduce((result, promise) => {
+    result.total += 1;
+    if (promise.status === 0) result.pending += 1;
+    if (promise.status === 1) result.active += 1;
+    if (promise.status === 2) result.discuss += 1;
+    return result;
+  }, { total: 0, pending: 0, active: 0, discuss: 0 });
+
+  document.querySelector("#pageRoot").innerHTML = `
+    <div class="promise-summary">
+      <div class="promise-summary-card"><span>全部承诺</span><strong>${counts.total}</strong></div>
+      <div class="promise-summary-card"><span>正在坚持</span><strong>${counts.active}</strong></div>
+      <div class="promise-summary-card"><span>等待确认</span><strong>${counts.pending}</strong></div>
+      <div class="promise-summary-card"><span>需要聊聊</span><strong>${counts.discuss}</strong></div>
+    </div>
+    <div class="section-toolbar">
+      <div class="section-heading"><h2>我们认真说过的话</h2><p>可以确认、修改、暂停和重新讨论；这里不会记录违约次数，也不会给彼此评分。</p></div>
+      <div class="segment-control promise-filter-control">${filters.map((item) => `<button class="segment-button ${promiseFilter === item ? "active" : ""}" data-promise-filter="${item}">${item}</button>`).join("")}</div>
+    </div>
+    <div class="promise-board">${promises.length ? promises.map((promise) => promiseCardHTML(promise, reviewsByPromise[promise.id] || [])).join("") : `<div class="empty-state full-span">这个状态下还没有承诺。<br><button class="button primary small" data-add-promise style="margin-top:12px">写下一个承诺</button></div>`}</div>`;
+}
+
+function promiseCardHTML(promise, reviews) {
+  const ownRole = selfMember().role;
+  const ownConfirmed = ownRole === "dog" ? promise.dog_confirmed : promise.cat_confirmed;
+  const bothConfirmed = promise.dog_confirmed && promise.cat_confirmed;
+  const ownerIcon = promise.owner_role === "both" ? "🐶🐱" : PERSON[promise.owner_role].icon;
+  const statusLabel = PROMISE_STATUSES[promise.status] || PROMISE_STATUSES[0];
+  const recentReviews = reviews.slice(0, 3);
+  const confirmationAction = !ownConfirmed
+    ? `<button class="button primary small" data-confirm-promise="${promise.id}">确认这份承诺</button>`
+    : !bothConfirmed
+      ? `<span class="promise-waiting">等待对方确认</span>`
+      : "";
+
+  return `<article class="card promise-card status-${promise.status}">
+    <div class="promise-card-top"><div><span class="promise-owner">${ownerIcon} ${promise.owner_role === "both" ? "双方承诺" : `${PERSON[promise.owner_role].name}的承诺`}</span><span class="promise-status">${escapeHTML(statusLabel)}</span></div><span class="promise-start">始于 ${shortDate(promise.start_date)}</span></div>
+    <h3>${escapeHTML(promise.title)}</h3>
+    <p class="promise-content">${escapeHTML(promise.content || "我们会认真对待这份承诺。")}</p>
+    <div class="promise-confirmations">
+      <span class="confirmation-chip ${promise.dog_confirmed ? "confirmed" : ""}">🐶 ${promise.dog_confirmed ? "已确认" : "待确认"}</span>
+      <span class="confirmation-chip ${promise.cat_confirmed ? "confirmed" : ""}">🐱 ${promise.cat_confirmed ? "已确认" : "待确认"}</span>
+    </div>
+    <div class="promise-reviews">
+      <div class="promise-reviews-heading"><strong>最近回顾</strong><button class="link-button" data-review-promise="${promise.id}">＋ 写回顾</button></div>
+      ${recentReviews.length ? recentReviews.map((review) => `<div class="promise-review"><div><span>${escapeHTML(profileFor(review.author_id)?.display_name || "我们")}</span><time>${shortDate(review.review_date)}</time></div><p>${escapeHTML(review.content)}</p></div>`).join("") : `<p class="promise-no-review">还没有回顾。可以写下这段时间做得好的地方，或需要重新沟通的部分。</p>`}
+    </div>
+    <div class="promise-actions">${confirmationAction}<button class="button secondary small" data-edit-promise="${promise.id}">编辑</button><button class="button danger small" data-delete-promise="${promise.id}">删除</button></div>
+  </article>`;
+}
+
 async function renderMemories() {
   const { data, error } = await supabase.from("memories").select("*").eq("couple_id", context.couple.id).order("memory_date", { ascending: false }).order("created_at", { ascending: false });
   if (error) throw error;
@@ -737,6 +809,24 @@ async function openWishModal(wishId = null) {
   openModal(`<section class="modal">${modalHeader(existing ? "EDIT WISH" : "NEW WISH", existing ? "修改共同愿望" : "添加一个共同愿望")}<form id="wishForm" class="form-grid"><input type="hidden" name="recordId" value="${existing?.id || ""}"><label>愿望标题<input name="title" required maxlength="100" placeholder="例如：一起去海边看日落" value="${escapeHTML(existing?.title || "")}"></label><div class="form-row"><label>类别<select name="category">${categories.map((item) => `<option ${existing?.category === item ? "selected" : ""}>${item}</option>`).join("")}</select></label><label>谁想到的<select name="ownerRole">${owners.map(([value, label]) => `<option value="${value}" ${existing?.owner_role === value || (!existing && value === "both") ? "selected" : ""}>${label}</option>`).join("")}</select></label></div><label>计划日期（可选）<input name="plannedDate" type="date" value="${existing?.planned_date || ""}"></label><label>小备注<textarea name="note" maxlength="300" placeholder="为什么想一起完成它？">${escapeHTML(existing?.note || "")}</textarea></label><div class="modal-actions"><button type="button" class="button secondary" data-close-modal>取消</button><button class="button primary" type="submit">${existing ? "保存修改" : "放进愿望清单"}</button></div></form></section>`);
 }
 
+
+async function openPromiseModal(promiseId = null) {
+  let existing = null;
+  if (promiseId) {
+    const { data, error } = await supabase.from("promises").select("*").eq("couple_id", context.couple.id).eq("id", promiseId).single();
+    if (error) { showToast(getErrorMessage(error), true); return; }
+    existing = data;
+  }
+  const owners = [["both", "我们两个人"], ["dog", "狗狗"], ["cat", "咪咪"]];
+  openModal(`<section class="modal">${modalHeader(existing ? "EDIT PROMISE" : "NEW PROMISE", existing ? "修改这份承诺" : "写下一个相互的承诺")}<form id="promiseForm" class="form-grid"><input type="hidden" name="recordId" value="${existing?.id || ""}"><label>承诺标题<input name="title" required maxlength="100" placeholder="例如：生气时不突然消失" value="${escapeHTML(existing?.title || "")}"></label><label>承诺内容<textarea name="content" required maxlength="800" placeholder="把希望怎样对待彼此写清楚，但不要写成惩罚或考核。">${escapeHTML(existing?.content || "")}</textarea></label><div class="form-row"><label>由谁作出<select name="ownerRole">${owners.map(([value, label]) => `<option value="${value}" ${existing?.owner_role === value || (!existing && value === "both") ? "selected" : ""}>${label}</option>`).join("")}</select></label><label>开始日期<input name="startDate" type="date" required value="${existing?.start_date || todayISO()}"></label></div>${existing ? `<label>当前状态<select name="status">${PROMISE_STATUSES.map((label, index) => `<option value="${index}" ${existing.status === index ? "selected" : ""}>${label}</option>`).join("")}</select></label>` : `<div class="promise-form-note">创建后，你会自动确认这份承诺；对方确认后，它会进入“正在坚持”。</div>`}<p class="form-message" data-form-message></p><div class="modal-actions"><button type="button" class="button secondary" data-close-modal>取消</button><button class="button primary" type="submit">${existing ? "保存修改" : "提交给对方确认"}</button></div></form></section>`);
+}
+
+async function openPromiseReviewModal(promiseId) {
+  const { data: promise, error } = await supabase.from("promises").select("id, title").eq("couple_id", context.couple.id).eq("id", promiseId).single();
+  if (error) { showToast(getErrorMessage(error), true); return; }
+  openModal(`<section class="modal">${modalHeader("PROMISE REVIEW", "写下一次承诺回顾")}<form id="promiseReviewForm" class="form-grid"><input type="hidden" name="promiseId" value="${promise.id}"><div class="promise-form-note">正在回顾：${escapeHTML(promise.title)}</div><label>回顾日期<input name="reviewDate" type="date" required value="${todayISO()}"></label><label>这段时间发生了什么<textarea name="content" required maxlength="800" placeholder="可以写做得好的地方、感受到的支持，或希望之后重新讨论的部分。"></textarea></label><p class="form-message" data-form-message></p><div class="modal-actions"><button type="button" class="button secondary" data-close-modal>取消</button><button class="button primary" type="submit">保存回顾</button></div></form></section>`);
+}
+
 async function openMemoryModal(memoryId = null) {
   let existing = null;
   if (memoryId) {
@@ -752,6 +842,7 @@ function handlePageAction() {
   if (currentPage === "home" || currentPage === "journal") openEntryModal();
   if (currentPage === "schedule") openTaskModal();
   if (currentPage === "wishes") openWishModal();
+  if (currentPage === "promises") openPromiseModal();
   if (currentPage === "memories") openMemoryModal();
 }
 
@@ -766,6 +857,11 @@ async function handleDelegatedClick(event) {
   if (event.target.closest("[data-add-wish]")) { openWishModal(); return; }
   const editWish = event.target.closest("[data-edit-wish]");
   if (editWish) { await openWishModal(editWish.dataset.editWish); return; }
+  if (event.target.closest("[data-add-promise]")) { openPromiseModal(); return; }
+  const editPromise = event.target.closest("[data-edit-promise]");
+  if (editPromise) { await openPromiseModal(editPromise.dataset.editPromise); return; }
+  const reviewPromise = event.target.closest("[data-review-promise]");
+  if (reviewPromise) { await openPromiseReviewModal(reviewPromise.dataset.reviewPromise); return; }
   const editMemory = event.target.closest("[data-edit-memory]");
   if (editMemory) { await openMemoryModal(editMemory.dataset.editMemory); return; }
   if (event.target.closest("[data-close-modal]")) { closeModal(); return; }
@@ -777,6 +873,8 @@ async function handleDelegatedClick(event) {
   if (range) { scheduleRange = range.dataset.scheduleRange; sessionStorage.setItem("dogCat:scheduleRange", scheduleRange); renderCurrentPage(); return; }
   const filter = event.target.closest("[data-wish-filter]");
   if (filter) { wishFilter = filter.dataset.wishFilter; sessionStorage.setItem("dogCat:wishFilter", wishFilter); renderCurrentPage(); return; }
+  const promiseFilterButton = event.target.closest("[data-promise-filter]");
+  if (promiseFilterButton) { promiseFilter = promiseFilterButton.dataset.promiseFilter; sessionStorage.setItem("dogCat:promiseFilter", promiseFilter); renderCurrentPage(); return; }
   const toggle = event.target.closest("[data-toggle-task]");
   if (toggle) { await toggleTask(toggle.dataset.toggleTask); return; }
   const deleteTask = event.target.closest("[data-delete-task]");
@@ -787,13 +885,17 @@ async function handleDelegatedClick(event) {
   if (advance) { await advanceWish(advance.dataset.advanceWish); return; }
   const deleteWish = event.target.closest("[data-delete-wish]");
   if (deleteWish) { await removeWish(deleteWish.dataset.deleteWish); return; }
+  const confirmPromiseButton = event.target.closest("[data-confirm-promise]");
+  if (confirmPromiseButton) { await confirmPromise(confirmPromiseButton.dataset.confirmPromise); return; }
+  const deletePromiseButton = event.target.closest("[data-delete-promise]");
+  if (deletePromiseButton) { await removePromise(deletePromiseButton.dataset.deletePromise); return; }
   const deleteMemory = event.target.closest("[data-delete-memory]");
   if (deleteMemory) { await removeMemory(deleteMemory.dataset.deleteMemory); }
 }
 
 async function handleDelegatedSubmit(event) {
   const form = event.target;
-  if (!["taskForm", "entryForm", "noteForm", "wishForm", "memoryForm"].includes(form.id)) return;
+  if (!["taskForm", "entryForm", "noteForm", "wishForm", "promiseForm", "promiseReviewForm", "memoryForm"].includes(form.id)) return;
   event.preventDefault();
   const button = form.querySelector("button[type=submit]");
   const data = new FormData(form);
@@ -803,6 +905,8 @@ async function handleDelegatedSubmit(event) {
     if (form.id === "entryForm") await saveEntry(form, data);
     if (form.id === "noteForm") await saveNote(data);
     if (form.id === "wishForm") await saveWish(data);
+    if (form.id === "promiseForm") await savePromise(data);
+    if (form.id === "promiseReviewForm") await savePromiseReview(data);
     if (form.id === "memoryForm") await saveMemory(data);
     closeModal();
     await renderCurrentPage();
@@ -857,6 +961,37 @@ async function saveWish(data) {
   showToast(recordId ? "愿望已经修改并同步。" : "新的愿望已经加入共同清单。 ");
 }
 
+
+async function savePromise(data) {
+  const recordId = String(data.get("recordId") || "").trim();
+  const payload = {
+    title: String(data.get("title") || "").trim(),
+    content: String(data.get("content") || "").trim(),
+    owner_role: String(data.get("ownerRole") || "both"),
+    start_date: String(data.get("startDate") || todayISO())
+  };
+  if (recordId) payload.status = Number(data.get("status"));
+  const query = recordId
+    ? supabase.from("promises").update(payload).eq("couple_id", context.couple.id).eq("id", recordId)
+    : supabase.from("promises").insert({ ...payload, couple_id: context.couple.id, created_by: session.user.id });
+  const { error } = await query;
+  if (error) throw error;
+  showToast(recordId ? "这份承诺已经修改并同步。" : "承诺已经发送给对方确认。");
+}
+
+async function savePromiseReview(data) {
+  const payload = {
+    couple_id: context.couple.id,
+    promise_id: String(data.get("promiseId")),
+    author_id: session.user.id,
+    review_date: String(data.get("reviewDate")),
+    content: String(data.get("content") || "").trim()
+  };
+  const { error } = await supabase.from("promise_reviews").insert(payload);
+  if (error) throw error;
+  showToast("这次承诺回顾已经同步给对方。");
+}
+
 async function saveMemory(data) {
   const recordId = String(data.get("recordId") || "").trim();
   const payload = { memory_date: String(data.get("date")), title: String(data.get("title") || "").trim(), note: String(data.get("note") || "").trim(), icon: String(data.get("icon") || "♥") };
@@ -904,6 +1039,22 @@ async function removeWish(wishId) {
   if (error) showToast(getErrorMessage(error), true); else { showToast("愿望已经删除。 "); await renderCurrentPage(); }
 }
 
+
+async function confirmPromise(promiseId) {
+  const role = selfMember().role;
+  const field = role === "dog" ? "dog_confirmed" : "cat_confirmed";
+  const { error } = await supabase.from("promises").update({ [field]: true }).eq("couple_id", context.couple.id).eq("id", promiseId);
+  if (error) { showToast(getErrorMessage(error), true); return; }
+  showToast("你已经确认这份承诺。");
+  await renderCurrentPage();
+}
+
+async function removePromise(promiseId) {
+  if (!window.confirm("确定删除这份承诺和它的所有回顾吗？")) return;
+  const { error } = await supabase.from("promises").delete().eq("couple_id", context.couple.id).eq("id", promiseId);
+  if (error) showToast(getErrorMessage(error), true); else { showToast("这份承诺已经删除。"); await renderCurrentPage(); }
+}
+
 async function removeMemory(memoryId) {
   if (!window.confirm("确定删除这条手动回忆吗？")) return;
   const { error } = await supabase.from("memories").delete().eq("id", memoryId);
@@ -916,7 +1067,7 @@ function handleEscape(event) {
 
 function subscribeRealtime() {
   unsubscribeRealtime();
-  const tables = ["daily_notes", "daily_entries", "tasks", "responses", "wishes", "memories"];
+  const tables = ["daily_notes", "daily_entries", "tasks", "responses", "wishes", "promises", "promise_reviews", "memories"];
   realtimeChannel = supabase.channel(`couple-${context.couple.id}`);
   tables.forEach((table) => realtimeChannel.on("postgres_changes", { event: "*", schema: "public", table, filter: `couple_id=eq.${context.couple.id}` }, scheduleRealtimeRefresh));
   realtimeChannel.subscribe((status) => {
